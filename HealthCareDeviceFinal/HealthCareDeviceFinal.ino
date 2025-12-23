@@ -1,5 +1,6 @@
 /************************************************************
- * ESP32-C3 HEALTHCARE WEARABLE – FULL FSM FINAL STABLE
+ * ESP32-C3 HEALTHCARE WEARABLE – FULL FSM FINAL
+ * + FALL FALSE LEARNING MEMORY (PATTERN-BASED, 80%)
  ************************************************************/
 
 #include <Arduino.h>
@@ -17,6 +18,13 @@
 #include <SparkFunLSM6DS3.h>
 
 #include "icons.h"
+#include "FallMemory.h"
+
+/* ================= OBJECT ================= */
+Adafruit_SSD1306 display(128,64,&Wire,-1);
+MAX30105 ppg;
+LSM6DS3 imu(I2C_MODE,0x6B);
+FallMemory fallMem;
 
 /* ================= PIN ================= */
 #define PIN_SCK   4
@@ -29,7 +37,6 @@
 
 #define OLED_SDA  8
 #define OLED_SCL  9
-
 #define BTN_OK_PIN   21
 #define BUZZER_PIN   10
 
@@ -49,11 +56,6 @@ const lmic_pinmap lmic_pins={
   .rst=PIN_RST,
   .dio={PIN_DIO0,PIN_DIO1,LMIC_UNUSED_PIN}
 };
-
-/* ================= OBJECT ================= */
-Adafruit_SSD1306 display(128,64,&Wire,-1);
-MAX30105 ppg;
-LSM6DS3 imu(I2C_MODE,0x6B);
 
 /* ================= FSM ================= */
 enum SystemState {
@@ -82,6 +84,23 @@ uint32_t fallConfirmStartMs=0;
 #define FALL_CONFIRM_SEC 10
 #define FALL_TX_PERIOD   10000
 uint32_t lastFallTxMs=0;
+
+/* ===== pattern hiện tại ===== */
+FallPattern curPattern;
+bool peakCapturing = false;
+uint32_t peakStartMs = 0;
+
+float peakAx=0, peakAy=0, peakAz=0;
+float peakGx=0, peakGy=0, peakGz=0;
+
+#define PEAK_WINDOW_MS 300
+/* ================= RESET MEMORY FSM ================= */
+bool resetHolding=false;
+bool resetConfirm=false;
+bool resetDone=false;
+uint32_t resetHoldMs=0;
+uint32_t resetConfirmMs=0;
+uint32_t resetDoneMs=0;
 
 /* ================= HR ================= */
 bool ppgReady=false;
@@ -153,72 +172,156 @@ void sendPort2_RequestTime(){
 /* ================= FSM ================= */
 void updateFSM(){
 
+  static bool lastBtn = HIGH;
+  bool btn = digitalRead(BTN_OK_PIN);
+
   if(sysState==ST_WAIT_TIME){
     if(unixBase!=0) sysState=ST_WAIT_SETUP_BTN;
-    return;
+    lastBtn = btn; return;
   }
 
   if(sysState==ST_WAIT_SETUP_BTN){
-    if(digitalRead(BTN_OK_PIN)==LOW){
-      Ab=Gb=0;
-      calibCount=0;
+    if(btn==LOW){
+      Ab=Gb=0; calibCount=0;
       calibStartMs=millis();
       sysState=ST_CALIB_FALL;
-      delay(300);
     }
-    return;
+    lastBtn = btn; return;
   }
 
   if(sysState==ST_CALIB_FALL){
-    float ax=imu.readFloatAccelX(), ay=imu.readFloatAccelY(), az=imu.readFloatAccelZ();
-    float gx=imu.readFloatGyroX(), gy=imu.readFloatGyroY(), gz=imu.readFloatGyroZ();
+    float ax=imu.readFloatAccelX();
+    float ay=imu.readFloatAccelY();
+    float az=imu.readFloatAccelZ();
+    float gx=imu.readFloatGyroX();
+    float gy=imu.readFloatGyroY();
+    float gz=imu.readFloatGyroZ();
+
     Ab+=sqrt(ax*ax+ay*ay+az*az);
     Gb+=sqrt(gx*gx+gy*gy+gz*gz);
     calibCount++;
+
     if(millis()-calibStartMs>=5000){
       Ab/=calibCount; Gb/=calibCount;
       At=Ab+0.8; Gt=Gb+150;
       initPPG();
       sysState=ST_RUNNING;
     }
-    return;
+    lastBtn = btn; return;
   }
 
   if(sysState==ST_RUNNING){
-    float ax=imu.readFloatAccelX(), ay=imu.readFloatAccelY(), az=imu.readFloatAccelZ();
-    float gx=imu.readFloatGyroX(), gy=imu.readFloatGyroY(), gz=imu.readFloatGyroZ();
+
+    if(resetDone){
+      if(millis()-resetDoneMs>2000) resetDone=false;
+      lastBtn = btn; return;
+    }
+
+    float ax=imu.readFloatAccelX();
+    float ay=imu.readFloatAccelY();
+    float az=imu.readFloatAccelZ();
+    float gx=imu.readFloatGyroX();
+    float gy=imu.readFloatGyroY();
+    float gz=imu.readFloatGyroZ();
+
     float A=sqrt(ax*ax+ay*ay+az*az);
     float G=sqrt(gx*gx+gy*gy+gz*gz);
 
-    if(A>At && G>Gt){
+    /* ===== build pattern ===== */
+    /* ===== START PEAK CAPTURE ===== */
+if(!peakCapturing && A > At){
+  peakCapturing = true;
+  peakStartMs = millis();
+
+  peakAx = fabs(ax);
+  peakAy = fabs(ay);
+  peakAz = fabs(az);
+
+  peakGx = fabs(gx);
+  peakGy = fabs(gy);
+  peakGz = fabs(gz);
+}
+
+/* ===== UPDATE PEAK ===== */
+if(peakCapturing){
+  peakAx = max(peakAx, fabs(ax));
+  peakAy = max(peakAy, fabs(ay));
+  peakAz = max(peakAz, fabs(az));
+
+  peakGx = max(peakGx, fabs(gx));
+  peakGy = max(peakGy, fabs(gy));
+  peakGz = max(peakGz, fabs(gz));
+
+  if(millis() - peakStartMs >= PEAK_WINDOW_MS){
+    peakCapturing = false;
+
+    /* ===== NORMALIZE ===== */
+    curPattern.ax = peakAx / 4.0f;
+    curPattern.ay = peakAy / 4.0f;
+    curPattern.az = peakAz / 4.0f;
+
+    curPattern.gx = peakGx / 1000.0f;
+    curPattern.gy = peakGy / 1000.0f;
+    curPattern.gz = peakGz / 1000.0f;
+  }
+}
+
+
+    if(!fall && !peakCapturing &&!fallMem.isFalseFall(curPattern) && A > At && G > Gt){
       fall=true;
       lockLoRa=false;
       fallConfirmStartMs=millis();
       sysState=ST_FALL_ALARM;
+      lastBtn = btn; return;
     }
-    return;
+
+    /* ===== reset memory FSM ===== */
+    if(!fall && !resetConfirm){
+      if(lastBtn==HIGH && btn==LOW){
+        resetHolding=true; resetHoldMs=millis();
+      }
+      if(resetHolding && btn==LOW && millis()-resetHoldMs>=3000){
+        resetHolding=false;
+        resetConfirm=true;
+        resetConfirmMs=millis();
+      }
+      if(btn==HIGH) resetHolding=false;
+    }
+
+    if(resetConfirm){
+      if(lastBtn==HIGH && btn==LOW){
+        fallMem.clear();
+        resetConfirm=false;
+        resetDone=true;
+        resetDoneMs=millis();
+      }
+      else if(millis()-resetConfirmMs>3000){
+        resetConfirm=false;
+      }
+    }
+
+    lastBtn = btn; return;
   }
 
   if(sysState==ST_FALL_ALARM){
-    if(digitalRead(BTN_OK_PIN)==LOW){
+    if(btn==LOW){
+      /* FALL GIẢ -> LƯU PATTERN */
+      fallMem.addFalseFall(curPattern);
       fall=false;
       lockLoRa=false;
-      digitalWrite(BUZZER_PIN,LOW);
       sysState=ST_RUNNING;
-      delay(300);
-      return;
     }
     if(millis()-fallConfirmStartMs>=FALL_CONFIRM_SEC*1000){
       lockLoRa=true;
     }
+    lastBtn = btn;
   }
 }
 
 /* ================= BUZZER ================= */
 void updateBuzzer(){
   if(sysState!=ST_FALL_ALARM){
-    digitalWrite(BUZZER_PIN,LOW);
-    return;
+    digitalWrite(BUZZER_PIN,LOW); return;
   }
   if(millis()-buzzerMs>1000){
     buzzerMs=millis();
@@ -236,42 +339,44 @@ void updateOLED(){
     (LMIC.devaddr!=0)?epd_bitmap_wifi:epd_bitmap_no_conn,
     24,24,1);
 
-  if(sysState==ST_WAIT_TIME){
-    display.setTextSize(2);
-    display.setCursor(32,24);
-    display.print("WAIT...");
+  if(resetHolding){
+    display.setTextSize(1);
+    display.setCursor(12,30);
+    display.print("Hold to reset...");
     display.display(); return;
   }
 
-  if(sysState==ST_WAIT_SETUP_BTN){
+  if(resetConfirm){
     display.setTextSize(1);
-    display.setCursor(14,22);
-    display.print("Stand straight");
-    display.setCursor(14,36);
+    display.setCursor(10,24);
+    display.print("RESET MEMORY?");
+    display.setCursor(18,38);
     display.print("Press OK");
     display.display(); return;
   }
 
-  if(sysState==ST_CALIB_FALL){
-    int sec=5-(millis()-calibStartMs)/1000;
-    display.setTextSize(1);
-    display.setCursor(30,18);
-    display.print("Calibrating");
-    display.setTextSize(3);
-    display.setCursor(54,36);
-    display.print(max(0,sec));
+  if(resetDone){
+    display.setTextSize(2);
+    display.setCursor(18,26);
+    display.print("RESET DONE");
     display.display(); return;
   }
-
+if(sysState == ST_WAIT_TIME){
+  display.setTextSize(2);
+  display.setCursor(32, 24);
+  display.print("WAIT...");
+  display.display();
+  return;
+}
   if(sysState==ST_FALL_ALARM){
-    int remain=FALL_CONFIRM_SEC-(millis()-fallConfirmStartMs)/1000;
-    if(remain<0) remain=0;
+    int r=FALL_CONFIRM_SEC-(millis()-fallConfirmStartMs)/1000;
+    if(r<0) r=0;
     display.drawBitmap(52,6,epd_bitmap_nofitication,24,24,1);
     display.setTextSize(2);
     display.setCursor(24,28);
     display.print("FALL");
     display.setCursor(56,48);
-    display.print(remain);
+    display.print(r);
     display.display(); return;
   }
 
@@ -283,14 +388,18 @@ void updateOLED(){
 
   display.setTextSize(1);
   display.setCursor(0,56);
-  time_t t=nowUnix()+7*3600;
-  struct tm tm; gmtime_r(&t,&tm);
-  char buf[24];
-  snprintf(buf,sizeof(buf),
-    "%02d/%02d/%04d %02d:%02d:%02d",
-    tm.tm_mday,tm.tm_mon+1,tm.tm_year+1900,
-    tm.tm_hour,tm.tm_min,tm.tm_sec);
-  display.print(buf);
+  uint32_t now=nowUnix();
+  if(now){
+    time_t t=now+7*3600;
+    struct tm tm; gmtime_r(&t,&tm);
+    char buf[24];
+    snprintf(buf,sizeof(buf),"%02d/%02d/%04d %02d:%02d:%02d",
+      tm.tm_mday,tm.tm_mon+1,tm.tm_year+1900,
+      tm.tm_hour,tm.tm_min,tm.tm_sec);
+    display.print(buf);
+  }else{
+    display.print("--/--/---- --:--:--");
+  }
   display.display();
 }
 
@@ -316,6 +425,7 @@ void setup(){
   pinMode(BUZZER_PIN,OUTPUT);
 
   imu.begin();
+  fallMem.begin();
 
   SPI.begin(PIN_SCK,PIN_MISO,PIN_MOSI,PIN_NSS);
   os_init(); LMIC_reset();
@@ -351,9 +461,8 @@ void loop(){
     if(millis()-lastFallTxMs>FALL_TX_PERIOD){
       lastFallTxMs=millis();
       if(!(LMIC.opmode & OP_TXRXPEND)){
-        uint16_t b=(uint16_t)bpm;
-        uint8_t p[3]={1,(uint8_t)(b>>8),(uint8_t)b};
-        LMIC_setTxData2(3,p,3,0);
+        uint8_t p[1]={1};
+        LMIC_setTxData2(3,p,1,0);
       }
     }
   }
