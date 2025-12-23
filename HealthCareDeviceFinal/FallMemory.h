@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 #define FALL_MEM_MAX 100
-#define FALL_SIM_THRESHOLD 0.8f
+#define FALL_SIM_THRESHOLD 0.95f
 
 struct FallPattern {
   float ax, ay, az;
