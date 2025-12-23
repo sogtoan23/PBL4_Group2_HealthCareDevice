@@ -470,7 +470,7 @@ void loop(){
     }
   }
 
-  if(sysState==ST_RUNNING && ppgReady && !lockLoRa){
+  if(sysState==ST_RUNNING && ppgReady && !lockLoRa && !fall){
     if(millis()-lastHrTxMs>30000){
       lastHrTxMs=millis();
       uint16_t b=(uint16_t)(bpm*10);
