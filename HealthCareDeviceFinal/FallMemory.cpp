@@ -80,6 +80,18 @@ void FallMemory::addFalseFall(const FallPattern& cur){
   size++;
   prefs.putUInt("size", size);
 }
+void FallMemory::setStandBaseline(float ab, float gb){
+  standAb = ab;
+  standGb = gb;
+}
+
+float FallMemory::getStandAb(){
+  return standAb;
+}
+
+float FallMemory::getStandGb(){
+  return standGb;
+}
 
 /* ===== clear ===== */
 void FallMemory::clear(){

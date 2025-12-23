@@ -17,7 +17,9 @@ public:
 
   bool hasData();
   uint16_t count();
-
+void setStandBaseline(float ab, float gb);
+  float getStandAb();
+  float getStandGb();
   bool isFalseFall(const FallPattern& cur);
   void addFalseFall(const FallPattern& cur);
 
@@ -29,6 +31,8 @@ private:
 
   FallPattern patterns[FALL_MEM_MAX];
   uint16_t size = 0;
+  float standAb = 0;
+  float standGb = 0;
 };
 
 #endif
