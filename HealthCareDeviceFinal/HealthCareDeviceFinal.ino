@@ -87,7 +87,9 @@ float standAb=0, standGb=0;
 float Ab=0,Gb=0,At=0,Gt=0;
 bool fall=false;
 bool lockLoRa=false;
+bool fallConfirmed=false;
 uint32_t fallConfirmStartMs=0;
+
 #define FALL_CONFIRM_SEC 10
 #define FALL_TX_PERIOD   10000
 uint32_t lastFallTxMs=0;
@@ -241,9 +243,11 @@ void updateFSM(){
 
     if(!resetConfirm){
       if(lastBtn==HIGH && btn==LOW){
-        resetHolding=true; resetHoldMs=millis();
+        resetHolding=true;
+        resetHoldMs=millis();
       }
-      if(resetHolding && btn==LOW && millis()-resetHoldMs>=3000){
+      if(resetHolding && btn==LOW &&
+         millis()-resetHoldMs>=3000){
         resetHolding=false;
         resetConfirm=true;
         resetConfirmMs=millis();
@@ -303,7 +307,9 @@ void updateFSM(){
     if(!fall && !peakCapturing &&
        !fallMem.isFalseFall(curPattern) &&
        A>At && G>Gt){
+
       fall=true;
+      fallConfirmed=false;
       lockLoRa=false;
       fallConfirmStartMs=millis();
       sysState=ST_FALL_ALARM;
@@ -314,15 +320,24 @@ void updateFSM(){
 
   /* ===== FALL ALARM ===== */
   if(sysState==ST_FALL_ALARM){
+
     if(btn==LOW){
-      fallMem.addFalseFall(curPattern);
+      if(!fallConfirmed){
+        fallMem.addFalseFall(curPattern);
+      }
       fall=false;
       lockLoRa=false;
       sysState=ST_RUNNING;
+      lastBtn=btn;
+      return;
     }
-    if(millis()-fallConfirmStartMs>=FALL_CONFIRM_SEC*1000){
+
+    if(!fallConfirmed &&
+       millis()-fallConfirmStartMs>=FALL_CONFIRM_SEC*1000){
+      fallConfirmed=true;
       lockLoRa=true;
     }
+
     lastBtn=btn;
   }
 }
@@ -423,6 +438,7 @@ void updateOLED(){
   }else{
     display.print("--/--/---- --:--:--");
   }
+
   display.display();
 }
 
