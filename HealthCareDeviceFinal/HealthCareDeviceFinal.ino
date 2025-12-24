@@ -89,6 +89,7 @@ bool fall=false;
 bool lockLoRa=false;
 bool fallConfirmed=false;
 uint32_t fallConfirmStartMs=0;
+bool fallResetSent = false;   // <-- THÊM
 
 #define FALL_CONFIRM_SEC 10
 #define FALL_TX_PERIOD   10000
@@ -311,6 +312,7 @@ void updateFSM(){
       fall=true;
       fallConfirmed=false;
       lockLoRa=false;
+      fallResetSent = false;  
       fallConfirmStartMs=millis();
       sysState=ST_FALL_ALARM;
     }
@@ -325,6 +327,13 @@ void updateFSM(){
       if(!fallConfirmed){
         fallMem.addFalseFall(curPattern);
       }
+      if(!fallResetSent){
+  if(!(LMIC.opmode & OP_TXRXPEND)){
+    uint8_t p[1] = {0};
+    LMIC_setTxData2(3, p, 1, 0);
+    fallResetSent = true;   // CHỈ set khi gửi thành công
+  }
+}
       fall=false;
       lockLoRa=false;
       sysState=ST_RUNNING;
@@ -420,8 +429,8 @@ void updateOLED(){
   display.drawBitmap(0,0,epd_bitmap_heart_rate,24,24,1);
   display.drawBitmap(0,28,epd_bitmap_spo2,24,24,1);
   display.setTextSize(2);
-  display.setCursor(30,12); display.print((int)bpm);
-  display.setCursor(30,40); display.print((int)spo2);
+  display.setCursor(30,4); display.print((int)bpm);
+  display.setCursor(30,32); display.print((int)spo2);
 
   display.setTextSize(1);
   display.setCursor(0,56);
