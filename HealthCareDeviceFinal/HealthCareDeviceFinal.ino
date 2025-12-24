@@ -34,8 +34,8 @@ FallMemory fallMem;
 #define PIN_MOSI  6
 #define PIN_NSS   7
 #define PIN_RST   3
-#define PIN_DIO0  2
-#define PIN_DIO1  1
+#define PIN_DIO1  2
+#define PIN_DIO0  1
 
 #define OLED_SDA  8
 #define OLED_SCL  9
